@@ -23,10 +23,313 @@ import torch
 from benchmark.JohnsonUltra import johnsonU
 
 
+class SchedulingEnv:
+    '''Env class for maintaining current partial solution and
+    updated graph during data collection process
+    '''
+    # read problem info specified by fname
+    def __init__(self, fname):
+        # load constraints
+        self.dur = np.loadtxt(fname+'_dur.txt', dtype=np.int32)
+        self.ddl = np.loadtxt(fname+'_ddl.txt', dtype=np.int32)
+        self.wait = np.loadtxt(fname+'_wait.txt', dtype=np.int32)
+        self.loc = np.loadtxt(fname+'_loc.txt', dtype=np.int32)
+        
+        self.num_tasks = self.dur.shape[0]
+        self.num_robots = self.dur.shape[1]
+        
+        self.M = self.num_tasks * 10.0 # infeasible reward token
+        self.C = 3.0 # discount factor for reward calculation
+
+        # reshape if shape is 1D, meaning there is only one constraint
+        if len(self.ddl) > 0 and len(self.ddl.shape) == 1:
+            self.ddl = self.ddl.reshape(1, -1)
+    
+        if len(self.wait) > 0 and len(self.wait.shape) == 1:
+            self.wait = self.wait.reshape(1, -1)  
+        
+        self.max_deadline = self.num_tasks * 10
+
+        # initial partial solution with t0
+        # t0 appears in all partial schedules
+        self.partials = []
+        for i in range(self.num_robots):
+            self.partials.append(np.zeros(1, dtype=np.int32))
+        
+        self.partialw = np.zeros(1, dtype=np.int32)
+        
+        # maintain a graph with min/max duration for unscheduled tasks
+        self.g = self.initialize_STN()
+        
+        # get initial min make span
+        success, min_makespan = self.check_consistency_makespan()
+        if success:
+            self.min_makespan = min_makespan
+        else:
+            print('Initial STN infeasible.')
+    
+    def initialize_STN(self):
+        # Initialize directed graph    
+        DG = nx.DiGraph()
+        DG.add_nodes_from(['s000', 'f000'])
+        DG.add_edge('s000', 'f000', weight = self.max_deadline)
+        # Add task nodes
+        for i in range(1, self.num_tasks+1):
+            # Add si and fi
+            si = 's%03d' % i
+            fi = 'f%03d' % i
+            DG.add_nodes_from([si, fi])
+            DG.add_weighted_edges_from([(si, 's000', 0),
+                                        ('f000', fi, 0)])
+        # Add task durations
+        for i in range(self.num_tasks):
+            si = 's%03d' % (i+1)
+            fi = 'f%03d' % (i+1)
+            dur_min = self.dur[i].min().item()
+            dur_max = self.dur[i].max().item()
+            DG.add_weighted_edges_from([(si, fi, dur_max),
+                                        (fi, si, -1 * dur_min)])
+        # Add deadlines
+        for i in range(self.ddl.shape[0]):
+            ti, ddl_cstr = self.ddl[i]
+            fi = 'f%03d' % ti
+            DG.add_edge('s000', fi, weight = ddl_cstr)            
+        # Add wait constraints
+        for i in range(self.wait.shape[0]):
+            ti, tj, wait_cstr = self.wait[i]
+            si = 's%03d' % ti
+            fj = 'f%03d' % tj
+            DG.add_edge(si, fj, weight = -1 * wait_cstr)
+        return DG
+    
+    def check_consistency_makespan(self, updateDG = True):
+        '''Check consistency and get min make span
+        Also creates the half min graph
+        '''
+        consistent = True
+        try:
+            p_ultra, d_ultra = johnsonU(self.g)
+        except Exception as e:
+            consistent = False
+            print('Infeasible:', e)
+        # Makespan
+        # Only consider the last finish time of scheduled tasks
+        if consistent:        
+            if len(self.partialw) == 1:
+                min_makespan = 0.0
+            else:
+                tmp = []
+                for i in range(1,len(self.partialw)):
+                    ti = self.partialw[i]
+                    fi = 'f%03d' % ti
+                    tmp.append(-1.0 * d_ultra[fi]['s000'])
+    
+                tmp_np = np.array(tmp)
+                min_makespan = tmp_np.max()
+        else:
+            min_makespan = self.M
+            return consistent, min_makespan
+        
+        if not updateDG:
+            return consistent, min_makespan
+        # Min distance graph & Half min graph
+        juDG = nx.DiGraph()
+        for i in range(0, self.num_tasks+1):
+            # Add si and fi
+            si = 's%03d' % i
+            fi = 'f%03d' % i
+            # minDG.add_nodes_from([si, fi])
+            if i == 0:
+                juDG.add_nodes_from([si, fi])
+            else:
+                juDG.add_node(si)
+        # add shortest path distance edges
+        for k_start in d_ultra:
+            for k_end in d_ultra[k_start]:
+                # print(key_start, key_end)
+                # check if path is inf
+                if d_ultra[k_start][k_end] < 9999:
+                    # minDG.add_edge(k_start, k_end, 
+                    #                weight = d_ultra[k_start][k_end])
+                    if juDG.has_node(k_start) and juDG.has_node(k_end):
+                        juDG.add_edge(k_start, k_end,
+                                      weight = d_ultra[k_start][k_end])
+        # self.minDG = minDG
+        self.halfDG = juDG
+        return consistent, min_makespan
+    
+    def insert_robot(self, ti, rj, diff = 1.0, updateDG = True):
+        '''...
+
+        ti is task number 1~num_tasks
+        rj is robot number 0~num_robots-1
+        append ti to rj's partial schedule
+        also update the STN
+        '''
+        # sanity check
+        if rj < 0 or rj >= self.num_robots:
+            print('invalid insertion')
+            return False        
+        # find tj and update partial solution
+        # tj is the last task of rj's partial schedule
+        # insert ti right after tj
+        tj = self.partials[rj][-1]
+        self.partials[rj] = np.append(self.partials[rj], ti)
+        self.partialw = np.append(self.partialw, ti)
+        # update graph
+        # insert ti after tj, no need to add when tj==0    
+        # no need to insert if a wait constraint already exists
+        if tj != 0:
+            si = 's%03d' % ti
+            fj = 'f%03d' % tj
+            if not self.g.has_edge(si, fj):
+                self.g.add_edge(si, fj, weight = 0)
+        # [New] Also, replace the task duration of ti with actual duration
+        si = 's%03d' % ti
+        fi = 'f%03d' % ti
+        ti_dur = self.dur[ti-1][rj]
+        # this will rewrite previous edge weights
+        self.g.add_weighted_edges_from([(si, fi, ti_dur),
+                                        (fi, si, -1 * ti_dur)])
+        # make sure start time of all unscheduled tasks is >= t si
+        for k in range(1, self.num_tasks+1):
+            if k not in self.partialw:
+                # tk starts no earlier than si
+                # si <= sk, si-sk<=0, sk->si:0
+                si = 's%03d' % ti
+                sk = 's%03d' % k
+                if not self.g.has_edge(sk, si):
+                    self.g.add_edge(sk, si, weight = 0)
+        # make sure the start time of all unscheduled tasks that
+        # are within the allowed distance (diff) happen after fi
+        for k in range(1, self.num_tasks+1):
+            if k not in self.partialw:
+                xi, yi = self.loc[ti-1]
+                xk, yk = self.loc[k-1]
+                dist_2 = (xi - xk) * (xi - xk) + (yi - yk) * (yi - yk)               
+                
+                if dist_2 <= diff * diff:
+                    # tk starts after fi
+                    # fi <= sk, fi-sk <=0, sk->fi:0
+                    fi = 'f%03d' % ti
+                    sk = 's%03d' % k
+                    if not self.g.has_edge(sk, fi):
+                        self.g.add_edge(sk, fi, weight=0)
+        # calculate reward for this insertion
+        success, reward = self.calc_reward_discount(updateDG)
+        # check done/termination
+        if success==False:
+            done = True
+        elif (self.partialw.shape[0]==self.num_tasks+1):
+            done = True
+        else:
+            done = False
+        return success, reward, done
+    
+    def calc_reward_discount(self, updateDG = True):
+        '''Reward R of a state-action pair is defined as the change
+        in objective values after taking the action,
+        
+        R = −1 × (Zt+1 − Zt).
+        
+        divide Zt by a factor D > 1 if xt is not a termination state
+
+        Z(infeasible) = M
+        '''
+        success, min_makespan = self.check_consistency_makespan(updateDG)
+        if success:    # feasible
+            # if last step
+            if self.partialw.shape[0]==(self.num_tasks+1):
+                delta = min_makespan - self.min_makespan/self.C
+            else:      # disounted delta
+                delta = (min_makespan - self.min_makespan)/self.C
+        else:          # infeasible
+            delta = self.M - self.min_makespan/self.C
+            min_makespan = self.M
+        reward = -1.0 * delta
+        self.min_makespan = min_makespan
+        return success, reward
+    
+    def get_unscheduled_tasks(self):
+        '''Return unscheduled tasks given partialw'''
+        unsch_tasks = []
+        for i in range(1, self.num_tasks+1):
+            if i not in self.partialw:
+                unsch_tasks.append(i)
+        return np.array(unsch_tasks)
+
+    def get_duration_on_tasks(self, robot, tasks):
+        """Returns durations of a robot on a list of tasks.
+        Task ids should be 1-indexed, and robot id should be 0-indexed
+        """
+        assert min(tasks) > 0, 'Tasks should be 1-indexed'
+        assert 0 <= robot < self.num_robots, 'Robot should be 0-indexed'
+        task_ids = [task - 1 for task in tasks]
+        return self.dur[task_ids, robot]
+
+    def get_valid_tasks(self, timepoint):
+        '''Return unscheduled tasks given partialw
+            plus checking if the task can starts at current timepoint
+        '''
+        valid_tasks = []
+        for i in range(1, self.num_tasks+1):
+            if i not in self.partialw:
+                # check task start time
+                # si->s0: A
+                # s0 - si <= A
+                # si >= -A
+                si = 's%03d' % i
+                time_si = -1.0 * self.halfDG[si]['s000']['weight']
+                # time_si is the earliest time task i can happen
+                if time_si <= timepoint:
+                    valid_tasks.append(i)
+        return np.array(valid_tasks)
+    
+    def get_rSTN(self, robot_chosen, valid_task):
+        '''Return an updated min robot STN
+            with task duration (valid unscheduled tasks) 
+            replaced with the task duration of chosen robot
+            plus consistency check
+        '''
+        rSTN = copy.deepcopy(self.g)
+        # modify STN
+        for i in range(len(valid_task)):
+            ti = valid_task[i]
+            si = 's%03d' % ti
+            fi = 'f%03d' % ti
+            ti_dur = self.dur[ti-1][robot_chosen]
+            rSTN.add_weighted_edges_from([(si, fi, ti_dur),
+                                          (fi, si, -1 * ti_dur)])       
+        # check consistency
+        consistent = True    
+        try:
+            p_ultra, d_ultra = johnsonU(rSTN)
+        except Exception as e:
+            consistent = False
+            print('Infeasible:', e) 
+        if consistent:   # get min STN
+            min_rSTN = nx.DiGraph()
+            for i in range(0, self.num_tasks+1):
+                # Add si and fi
+                si = 's%03d' % i
+                fi = 'f%03d' % i
+                min_rSTN.add_nodes_from([si, fi])
+            # add shortest path distance edges
+            for k_start in d_ultra:
+                for k_end in d_ultra[k_start]:
+                    # check if path is valid
+                    if d_ultra[k_start][k_end] < 9999:
+                        min_rSTN.add_edge(k_start, k_end, 
+                                       weight = d_ultra[k_start][k_end])        
+            return min_rSTN, True
+        else:
+            return None, False
+        pass
+    pass
+
 def build_hetgraph(halfDG, num_tasks, num_robots, dur, map_width, locs, loc_dist_threshold,
                    partials, unsch_tasks, selected_robot, valid_tasks):
-    """
-    Helper function for building HetGraph
+    """Helper function for building HetGraph
     Q nodes are built w.r.t selected_robot & unsch_tasks
         valid_tasks: available tasks filtered from unsch_tasks
         
@@ -178,7 +481,7 @@ def build_hetgraph(halfDG, num_tasks, num_robots, dur, map_width, locs, loc_dist
     graph.edges['take_time'].data['t'] = takes_time_weight
     # Ordering of takes_time and uses_time edges are exactly the same
     graph.edges['use_time'].data['t'] = takes_time_weight.detach().clone()
-    
+
     return graph
 
 def hetgraph_node_helper(number_of_nodes, curr_partialw, curr_partials,
@@ -252,473 +555,3 @@ def hetgraph_node_helper(number_of_nodes, curr_partialw, curr_partials,
 
     return feat_dict
 
-
-'''
-Env class for maintaining current partial solution and updated graph
-    during data collection process
-'''
-class SchedulingEnv(object):
-    # read problem info specified by fname
-    def __init__(self, fname):
-        # load constraints
-        self.dur = np.loadtxt(fname+'_dur.txt', dtype=np.int32)
-        self.ddl = np.loadtxt(fname+'_ddl.txt', dtype=np.int32)
-        self.wait = np.loadtxt(fname+'_wait.txt', dtype=np.int32)
-        self.loc = np.loadtxt(fname+'_loc.txt', dtype=np.int32)
-        
-        self.num_tasks = self.dur.shape[0]
-        self.num_robots = self.dur.shape[1]
-        
-        self.M = self.num_tasks * 10.0 # infeasible reward token
-        self.C = 3.0 # discount factor for reward calculation
-
-        # reshape if shape is one-dimension, meaning there is only one constraint
-        if len(self.ddl) > 0 and len(self.ddl.shape) == 1:
-            self.ddl = self.ddl.reshape(1, -1)
-    
-        if len(self.wait) > 0 and len(self.wait.shape) == 1:
-            self.wait = self.wait.reshape(1, -1)  
-        
-        self.max_deadline = self.num_tasks * 10
-
-        # initial partial solution with t0
-        # t0 appears in all partial schedules
-        self.partials = []
-        for i in range(self.num_robots):
-            self.partials.append(np.zeros(1, dtype=np.int32))
-        
-        self.partialw = np.zeros(1, dtype=np.int32)
-        
-        # maintain a graph with min/max duration for unscheduled tasks
-        self.g = self.initialize_STN()
-        
-        # get initial min make span
-        success, min_makespan = self.check_consistency_makespan()
-        if success:
-            self.min_makespan = min_makespan
-        else:
-            print('Initial STN infeasible.')
-    
-    def initialize_STN(self):
-        # Initialize directed graph    
-        DG = nx.DiGraph()
-        DG.add_nodes_from(['s000', 'f000'])
-        DG.add_edge('s000', 'f000', weight = self.max_deadline)
-                
-        # Add task nodes
-        for i in range(1, self.num_tasks+1):
-            # Add si and fi
-            si = 's%03d' % i
-            fi = 'f%03d' % i
-            DG.add_nodes_from([si, fi])
-            DG.add_weighted_edges_from([(si, 's000', 0),
-                                        ('f000', fi, 0)])
-        
-        # Add task durations
-        for i in range(self.num_tasks):
-            si = 's%03d' % (i+1)
-            fi = 'f%03d' % (i+1)
-            dur_min = self.dur[i].min().item()
-            dur_max = self.dur[i].max().item()
-            DG.add_weighted_edges_from([(si, fi, dur_max),
-                                        (fi, si, -1 * dur_min)])
-        
-        # Add deadlines
-        for i in range(self.ddl.shape[0]):
-            ti, ddl_cstr = self.ddl[i]
-            fi = 'f%03d' % ti
-            DG.add_edge('s000', fi, weight = ddl_cstr)            
-            
-        # Add wait constraints
-        for i in range(self.wait.shape[0]):
-            ti, tj, wait_cstr = self.wait[i]
-            si = 's%03d' % ti
-            fj = 'f%03d' % tj
-            DG.add_edge(si, fj, weight = -1 * wait_cstr)
-        
-        return DG
-    
-    '''
-    Check consistency and get min make span
-        Also creates the half min graph
-    '''
-    def check_consistency_makespan(self, updateDG = True):
-        consistent = True
-        try:
-            p_ultra, d_ultra = johnsonU(self.g)
-        except Exception as e:
-            consistent = False
-            print('Infeasible:', e)
-                
-        '''
-        Makespan
-        Only consider the last finish time of scheduled tasks
-        '''
-        if consistent:        
-            if len(self.partialw) == 1:
-                min_makespan = 0.0
-            else:
-                tmp = []
-                for i in range(1,len(self.partialw)):
-                    ti = self.partialw[i]
-                    fi = 'f%03d' % ti
-                    tmp.append(-1.0 * d_ultra[fi]['s000'])
-    
-                tmp_np = np.array(tmp)
-                min_makespan = tmp_np.max()
-        else:
-            min_makespan = self.M
-            return consistent, min_makespan
-        
-        if not updateDG:
-            return consistent, min_makespan
-        
-        '''
-        Min distance graph & Half min graph
-        '''
-        juDG = nx.DiGraph()
-        for i in range(0, self.num_tasks+1):
-            # Add si and fi
-            si = 's%03d' % i
-            fi = 'f%03d' % i
-            # minDG.add_nodes_from([si, fi])
-            if i == 0:
-                juDG.add_nodes_from([si, fi])
-            else:
-                juDG.add_node(si)
-        
-        # add shortest path distance edges
-        for k_start in d_ultra:
-            for k_end in d_ultra[k_start]:
-                #print(key_start, key_end)
-                # check if path is inf
-                if d_ultra[k_start][k_end] < 9999:
-                    # minDG.add_edge(k_start, k_end, 
-                    #                weight = d_ultra[k_start][k_end])
-                    if juDG.has_node(k_start) and juDG.has_node(k_end):
-                        juDG.add_edge(k_start, k_end,
-                                      weight = d_ultra[k_start][k_end])
-        
-        # self.minDG = minDG
-        self.halfDG = juDG
-        
-        return consistent, min_makespan
-    
-    '''          
-    ti is task number 1~num_tasks
-    rj is robot number 0~num_robots-1
-    append ti to rj's partial schedule
-    also update the STN
-    '''
-    def insert_robot(self, ti, rj, diff = 1.0, updateDG = True):
-        # sanity check
-        if rj < 0 or rj >= self.num_robots:
-            print('invalid insertion')
-            return False        
-        
-        # find tj and update partial solution
-        # tj is the last task of rj's partial schedule
-        # insert ti right after tj
-        tj = self.partials[rj][-1]
-        self.partials[rj] = np.append(self.partials[rj], ti)
-        self.partialw = np.append(self.partialw, ti)
-
-        # update graph
-        # insert ti after tj, no need to add when tj==0    
-        # no need to insert if a wait constraint already exists
-        if tj != 0:
-            si = 's%03d' % ti
-            fj = 'f%03d' % tj
-            if not self.g.has_edge(si, fj):
-                self.g.add_edge(si, fj, weight = 0)
-        
-        '''
-        [New] Also, replace the task duration of ti with actual duration
-        '''
-        si = 's%03d' % ti
-        fi = 'f%03d' % ti
-        ti_dur = self.dur[ti-1][rj]
-        # this will rewrite previous edge weights
-        self.g.add_weighted_edges_from([(si, fi, ti_dur),
-                                        (fi, si, -1 * ti_dur)])
-        
-        '''
-        make sure the start time of all unscheduled tasks is no earlier thant si
-        '''
-        for k in range(1, self.num_tasks+1):
-            if k not in self.partialw:
-                # tk starts no earlier than si
-                # si <= sk, si-sk<=0, sk->si:0
-                si = 's%03d' % ti
-                sk = 's%03d' % k
-                if not self.g.has_edge(sk, si):
-                    self.g.add_edge(sk, si, weight = 0)
-
-        '''
-        make sure the start time of all unscheduled tasks that
-        are within the allowed distance (diff) happen after fi
-        '''
-        for k in range(1, self.num_tasks+1):
-            if k not in self.partialw:
-                xi, yi = self.loc[ti-1]
-                xk, yk = self.loc[k-1]
-                dist_2 = (xi - xk) * (xi - xk) + (yi - yk) * (yi - yk)               
-                
-                if dist_2 <= diff * diff:
-                    # tk starts after fi
-                    # fi <= sk, fi-sk <=0, sk->fi:0
-                    fi = 'f%03d' % ti
-                    sk = 's%03d' % k
-                    if not self.g.has_edge(sk, fi):
-                        self.g.add_edge(sk, fi, weight=0)
-
-        # calculate reward for this insertion
-        success, reward = self.calc_reward_discount(updateDG)
-        # check done/termination
-        if success==False:
-            done = True
-        elif (self.partialw.shape[0]==self.num_tasks+1):
-            done = True
-        else:
-            done = False
-        
-        return success, reward, done
-    
-    '''
-    Reward R of a state-action pair is defined as the change
-        in objective values after taking the action,
-        
-        R = −1 × (Zt+1 − Zt).
-        
-        divide Zt by a factor D > 1 if xt is not a termination state
-
-        Z(infeasible) = M
-    '''
-    def calc_reward_discount(self, updateDG = True):
-        success, min_makespan = self.check_consistency_makespan(updateDG)
-        # feasible
-        if success:
-            # if last step
-            if self.partialw.shape[0]==(self.num_tasks+1):
-                delta = min_makespan - self.min_makespan/self.C
-            # disounted delta
-            else:
-                delta = (min_makespan - self.min_makespan)/self.C
-        # infeasible
-        else:
-            delta = self.M - self.min_makespan/self.C
-            min_makespan = self.M
-        
-        reward = -1.0 * delta
-        
-        self.min_makespan = min_makespan
-        return success, reward
-
-    '''
-    Return unscheduled tasks given partialw
-    '''
-    def get_unscheduled_tasks(self):
-        unsch_tasks = []
-        for i in range(1, self.num_tasks+1):
-            if i not in self.partialw:
-                unsch_tasks.append(i)
-        
-        return np.array(unsch_tasks)
-
-    def get_duration_on_tasks(self, robot, tasks):
-        """Returns durations of a robot on a list of tasks.
-        Task ids should be 1-indexed, and robot id should be 0-indexed
-        """
-        assert min(tasks) > 0, 'Tasks should be 1-indexed'
-        assert 0 <= robot < self.num_robots, 'Robot should be 0-indexed'
-
-        task_ids = [task - 1 for task in tasks]
-        return self.dur[task_ids, robot]
-
-    '''
-    Return unscheduled tasks given partialw
-        plus checking if the task can starts at current timepoint
-    '''
-    def get_valid_tasks(self, timepoint):
-        valid_tasks = []
-        for i in range(1, self.num_tasks+1):
-            if i not in self.partialw:
-                # check task start time
-                # si->s0: A
-                # s0 - si <= A
-                # si >= -A
-                si = 's%03d' % i
-                time_si = -1.0 * self.halfDG[si]['s000']['weight']
-                # time_si is the earliest time task i can happen
-                if time_si <= timepoint:
-                    valid_tasks.append(i)
-        
-        return np.array(valid_tasks)
-    
-    '''
-    Return an updated min robot STN
-        with task duration (valid unscheduled tasks) 
-        replaced with the task duration of chosen robot
-        plus consistency check
-    '''
-    def get_rSTN(self, robot_chosen, valid_task):
-        rSTN = copy.deepcopy(self.g)
-        # modify STN
-        for i in range(len(valid_task)):
-            ti = valid_task[i]
-            si = 's%03d' % ti
-            fi = 'f%03d' % ti
-            ti_dur = self.dur[ti-1][robot_chosen]
-            rSTN.add_weighted_edges_from([(si, fi, ti_dur),
-                                          (fi, si, -1 * ti_dur)])       
-        
-        # check consistency
-        consistent = True    
-        try:
-            p_ultra, d_ultra = johnsonU(rSTN)
-        except Exception as e:
-            consistent = False
-            print('Infeasible:', e) 
-
-        if consistent:    
-            # get min STN
-            min_rSTN = nx.DiGraph()
-            for i in range(0, self.num_tasks+1):
-                # Add si and fi
-                si = 's%03d' % i
-                fi = 'f%03d' % i
-                min_rSTN.add_nodes_from([si, fi])
-            
-            # add shortest path distance edges
-            for k_start in d_ultra:
-                for k_end in d_ultra[k_start]:
-                    # check if path is valid
-                    if d_ultra[k_start][k_end] < 9999:
-                        min_rSTN.add_edge(k_start, k_end, 
-                                       weight = d_ultra[k_start][k_end])        
-            
-            return min_rSTN, True
-        else:
-            return None, False
-
-
-'''
-Transition for n-step
-state
-    curr_g: networkx graph updated with current solution
-    curr_partials: partial solution as a list of numpy arrays (int)
-        [sd0 sd1 ...]
-            sd0: partial schedule of robot 0
-            sd1: partial schedule of robot 1
-            ......
-    curr_partialw: partial schedule of all tasks selected
-    locations: the location of each task
-    durations: the duration of each task
-action
-    act_task: ti
-    act_robot: rj
-        append ti to rj's partial schedule
-reward
-    reward_n: total future discounted rewards
-state after 1-step
-    next_g: networkx graph
-    next_partial: next partial solution
-termination
-    next_done: if True, means the next state is a termination state
-        one episode finishes
-        1. finish with feasible solution
-        2. stop with infeasible partial
-'''
-Transition = namedtuple('Transition',
-                        ('curr_g', 'curr_partials', 'curr_partialw',
-                         'locs', 'durs',
-                         'act_task', 'act_robot',
-                         'reward_n', 'next_g', 'next_partials',
-                         'next_partialw', 'next_done'))
-
-'''
-Replay buffer
-'''
-class ReplayMemory(object):
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.memory = []
-        self.position = 0
-
-    # Saves a transition
-    def push(self, *args):
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = Transition(*args)
-        self.position = (self.position + 1) % self.capacity
-
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
-
-'''
-Enumerate all possible insertions (rollout version) based on
-    num_tasks: number of total tasks 1~N
-    curr_partialw: partial solution
-Return
-    act_task: list of all possible insertions
-'''
-def action_helper_rollout(num_tasks, curr_partialw):
-    act_task = []
-    # pick a task t_i from {unallocated}
-    for i in range(1, num_tasks + 1):
-        if i not in curr_partialw:
-            act_task.append(i)
-
-    return np.array(act_task)
-        
-if __name__ == '__main__':
-    # problem path
-    fname = 'gen/r2t20_001/00013'
-    solname = 'gen/r2t20_001v9/00013'
-    # initialize env
-    env = SchedulingEnv(fname)
-    # env.g is the original STN
-    print(env.g.nodes())
-    print(env.g.number_of_edges())
-    # env.halfDG is the simplified graph to be used for graph construction
-    print(sorted(env.halfDG.nodes()))
-    print(env.halfDG.number_of_edges())
-    
-    # load solution
-    optimals = []
-    for i in range(env.num_robots):
-        optimals.append(np.loadtxt(solname+'_%d.txt' % i, dtype=np.int32))
-    optimalw = np.loadtxt(solname+'_w.txt', dtype=np.int32)
-    
-    for i in range(env.num_robots):
-        print(optimals[i])
-
-    print(optimalw)
-    
-    #optimalw[8] = 12
-    #optimalw[9] = 7
-    
-    print('Initial makespan: ', env.min_makespan)
-    # check gurobi solution
-    rs = []
-    for i in range(len(optimalw)):
-        for j in range(env.num_robots):
-            if optimalw[i] in optimals[j]:
-                rj = j
-                break
-          
-        rt, reward, done = env.insert_robot(optimalw[i], rj)
-        rs.append(reward)
-        print('Insert %d, %d' % (optimalw[i], rj))
-        print('No. Edges: %d' % env.halfDG.number_of_edges())
-        print('Returns: ', rt, reward, done, env.min_makespan)
-        if not rt:
-            print('Infeasible!')
-            break
-        
-    print(env.partialw)
-    print(sum(rs))
-    print('test passed')    

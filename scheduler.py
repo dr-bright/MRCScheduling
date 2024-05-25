@@ -5,7 +5,7 @@ import torch.nn as nn
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
-from utils import SchedulingEnv, build_hetgraph, hetgraph_node_helper
+from utils_old import SchedulingEnv, build_hetgraph, hetgraph_node_helper
 from benchmark.edfutils import RobotTeam
 from graph.hetgat import HeteroGATLayer
 

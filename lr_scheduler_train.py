@@ -19,8 +19,8 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from hetnet import ScheduleNet4Layer
-from utils import ReplayMemory, Transition, action_helper_rollout
-from utils import SchedulingEnv, hetgraph_node_helper, build_hetgraph
+from utils_old import ReplayMemory, Transition, action_helper_rollout
+from utils_old import SchedulingEnv, hetgraph_node_helper, build_hetgraph
 
 '''
 Fill memory buffer with demonstration data set

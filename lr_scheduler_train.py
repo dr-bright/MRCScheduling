@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from hetnet import ScheduleNet4Layer
+from graph.hetgat import ScheduleNet4Layer
 from utils_old import ReplayMemory, Transition, action_helper_rollout
 from utils_old import SchedulingEnv, hetgraph_node_helper, build_hetgraph
 

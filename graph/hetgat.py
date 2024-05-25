@@ -327,11 +327,11 @@ class HeteroGATLayer(nn.Module):
         funcs['tin'] = (self.message_tin, self.reduce_tin)
         funcs['lin'] = (self.message_lin, self.reduce_lin)
         funcs['rin'] = (self.message_rin, self.reduce_rin)
-        funcs['sin'] = (fn.copy_src('Wh_sin', 'z_sin'), fn.sum('z_sin', 'h'))
-        funcs['tto'] = (fn.copy_src('Wh_tto', 'z_tto'), fn.sum('z_tto', 'h'))
-        funcs['rto'] = (fn.copy_src('Wh_rto', 'z_rto'), fn.sum('z_rto', 'h'))
-        funcs['sto'] = (fn.copy_src('Wh_sto', 'z_sto'), fn.sum('z_sto', 'h'))
-        funcs['vto'] = (fn.copy_src('Wh_vto', 'z_vto'), fn.sum('z_vto', 'h'))
+        funcs['sin'] = (fn.copy_u('Wh_sin', 'z_sin'), fn.sum('z_sin', 'h'))
+        funcs['tto'] = (fn.copy_u('Wh_tto', 'z_tto'), fn.sum('z_tto', 'h'))
+        funcs['rto'] = (fn.copy_u('Wh_rto', 'z_rto'), fn.sum('z_rto', 'h'))
+        funcs['sto'] = (fn.copy_u('Wh_sto', 'z_sto'), fn.sum('z_sto', 'h'))
+        funcs['vto'] = (fn.copy_u('Wh_vto', 'z_vto'), fn.sum('z_vto', 'h'))
         # [task] - [take_time] - [robot]
         funcs['take_time'] = (self.messsage_ttr, self.reduce_ttr)
         # [robot] - [use_time] - [task]

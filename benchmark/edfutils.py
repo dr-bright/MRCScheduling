@@ -10,53 +10,44 @@ Utils for EDF
 import sys
 import numpy as np
 
-sys.path.append('../')
-from utils_old import SchedulingEnv
 
-'''
-Task class
-'''
 class Task(object):
     def __init__(self, t_id, s_time, e_time):
         self.id = t_id
         self.start_time = s_time
         self.end_time = e_time
 
-'''
-Robot class
-'''
+
 class Robot(object):
     def __init__(self, r_id):
         self.id = r_id
         self.schedule = []
         self.next_available_time = 0
 
-'''
-Robot team class
-'''
+
 class RobotTeam(object):
     def __init__(self, num_robots):
         self.num_robots = num_robots
         self.robots = [Robot(i) for i in range(num_robots)]
 
-    # Return a robot id that is available at a given time point
-    # new: return all the available robots
-    # Return [] if none is available
     def pick_robot(self, timepoint):
+        """Return a robot id that is available at a given time point
+        new: return all the available robots
+        Return [] if none is available"""
         available = []
         for i in range(self.num_robots):
             if self.robots[i].next_available_time <= timepoint:
                 available.append(self.robots[i].id)
-        
         return available
 
-    def pick_robot_by_min_dur(self, time, env: SchedulingEnv, version, exclude=[]):
+    def pick_robot_by_min_dur(self, time, env, version,
+                              exclude=[]):
         """Returns the robot with minimum average duration on unscheduled tasks for v1,
         min duration on any one unscheduled task for v2,
         min average duration on valid tasks for v3
         """
-        dur_and_robot = []  # List of (average duration, robot id) tuples
-
+        dur_and_robot = []  # List of (mean duration, robot id)
+        
         if version == 'v3':
             tasks = env.get_valid_tasks(time)
         else:
@@ -67,40 +58,40 @@ class RobotTeam(object):
         for i in range(self.num_robots):
             if self.robots[i].id not in exclude:
                 if self.robots[i].next_available_time <= time:
-                    dur = env.get_duration_on_tasks(self.robots[i].id, tasks)
+                    dur = env.get_duration_on_tasks(self.robots[i].id,
+                                                    tasks)
                     if version == 'v2':
-                        dur_and_robot.append((min(dur), self.robots[i].id))
+                        dur_and_robot.append(
+                            (min(dur), self.robots[i].id))
                     else:
-                        dur_and_robot.append((sum(dur) / len(dur), self.robots[i].id))
-
+                        dur_and_robot.append(
+                            (sum(dur) / len(dur), self.robots[i].id))
         # No robot is available
         if len(dur_and_robot) == 0:
             return None
-
         return min(dur_and_robot)[1]
 
     def __len__(self):
         return len(self.robots)
     
-    # Update the status of robot after scheduling the chosen task
     def update_status(self, task_chosen, robot_chosen, task_dur, t):
+        """Update the status of robot after scheduling the chosen task"""
         self.robots[robot_chosen].schedule.append(Task(task_chosen, t, t + task_dur))
         self.robots[robot_chosen].next_available_time = t + task_dur  
 
-    # print all robots' schedules
     def print_schedule(self):
         for i in range(self.num_robots):
             print('Robot %d' % self.robots[i].id)
             for task in self.robots[i].schedule:
                 print('Task (%d,%d,%d)'%(task.id, task.start_time, task. end_time))
-                
-                
-'''
-Pick a task that has the earlist deadline
-    minDG: APSP graph
-    act_task: unscheduled tasks
-'''
+    pass
+
+
 def pick_task(minDG, act_task, timepoint):
+    '''Pick a task that has the earlist deadline
+        minDG: APSP graph
+        act_task: unscheduled tasks
+    '''
     length = len(act_task)
     if length == 0:
         return -1

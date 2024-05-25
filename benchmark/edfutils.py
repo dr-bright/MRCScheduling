@@ -11,7 +11,7 @@ import sys
 import numpy as np
 
 sys.path.append('../')
-from utils import SchedulingEnv
+from utils_old import SchedulingEnv
 
 '''
 Task class

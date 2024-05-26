@@ -134,29 +134,23 @@ def load_model(checkpoint_tar):
     return model
 
 
-def load_task(task_path):
-    env = SchedulingEnv(task_path)
+def load_task(tasks_path):
+    env = SchedulingEnv(tasks_path)
     robots = RobotTeam(env.num_robots)
     return env, robots
 
 
 def gnn_pick_task(hetg, act_task, pnet, ft_dict):
-    '''
-    Pick a task using GNN value function
-        hetg: HetGraph in DGL
-        act_task: unscheduled/available tasks
-        pnet: trained GNN model
-        ft_dict: input feature dict
-        rj: robot chosen, not needed as hetg is based on the selected robot
-        + also returns predictions of each task
-    '''
+    '''Pick a task using GNN value function
+    hetg: HetGraph in DGL
+    act_task: unscheduled/available tasks
+    pnet: trained GNN model
+    ft_dict: input feature dict
+    rj: robot chosen, not needed as hetg is based on the selected robot
+    + also returns predictions of each task'''
     length = len(act_task)
     if length == 0:
         return -1, np.array([0])
-       
-    '''
-    pick task using GNN
-    '''
     #idx = np.argmin(tmp)
     if length == 1:
         idx = 0
@@ -170,9 +164,7 @@ def gnn_pick_task(hetg, act_task, pnet, ft_dict):
             # get argmax on selected robot
             a_idx = q_s_a.argmax()
             idx = int(a_idx)
-    
     task_chosen = act_task[idx]
-
     return task_chosen, q_s_a_np
 
 
@@ -189,42 +181,42 @@ def schedule(task_path, policy_net, map_width):
         # Repeatedly select robot with min duration until none available
         while rob_chosen is not None:
             unsch_tasks = np.array(env.get_unscheduled_tasks(),
-                                   dtype=np.int64)
+                                dtype=np.int64)
             valid_tasks = np.array(env.get_valid_tasks(t),
-                                   dtype=np.int64)
+                                dtype=np.int64)
             
             if len(valid_tasks) > 0:
                 # TODO: study hetgraph construction
                 # TODO: reimplement build_hetgraph to support non-square maps
                 # maybe even arbitrary maps or something like that
                 g = build_hetgraph(env.halfDG, env.num_tasks,
-                                   env.num_robots, env.dur,
-                                   map_width, np.array(env.loc, dtype=np.int64),
-                                   1.0, # loc_dist_threshold
-                                   env.partials, unsch_tasks, rob_chosen,
-                                   valid_tasks)
+                                env.num_robots, env.dur,
+                                map_width, np.array(env.loc, dtype=np.int64),
+                                1.0, # loc_dist_threshold
+                                env.partials, unsch_tasks, rob_chosen,
+                                valid_tasks)
                 g = g.to(torch_dev)
                 featd = hetgraph_node_helper(env.halfDG.number_of_nodes(),
-                                             env.partialw, env.partials,
-                                             env.loc, env.dur, map_width,
-                                             env.num_robots,
-                                             len(valid_tasks))
-                featd_tensr = {}
+                                            env.partialw, env.partials,
+                                            env.loc, env.dur, map_width,
+                                            env.num_robots,
+                                            len(valid_tasks))
+                featt = {}
                 for k in featd:
-                    featd_tensr[k] = torch.Tensor(featd[k]).to(torch_dev)
+                    featt[k] = torch.Tensor(featd[k]).to(torch_dev)
                 task_chosen, pre = gnn_pick_task(g, valid_tasks,
-                                                 policy_net, featd_tensr)
+                                                policy_net, featt)
                 if task_chosen >= 0:
                     task_dur = env.dur[task_chosen-1][rob_chosen]
                     rt, reward, done = env.insert_robot(task_chosen,
                                                         rob_chosen)
                     decision_step += 1
                     robots.update_status(task_chosen, rob_chosen,
-                                         task_dur, t)
+                                        task_dur, t)
                     print(('Step: %d,Time: %d, Robot %d,'
-                           ' Task %02d, Dur %02d')
+                        ' Task %02d, Dur %02d')
                             %(decision_step, t, rob_chosen+1,
-                              task_chosen, task_dur))
+                            task_chosen, task_dur))
                     print(valid_tasks)
                     print(pre)
                     # uncomment if you want to save intermediate plots
@@ -234,7 +226,7 @@ def schedule(task_path, policy_net, map_width):
                     # Check for termination
                     if rt == False:
                         print('Infeasible after %d insertions'
-                              % (len(env.partialw)-1))
+                            % (len(env.partialw)-1))
                         terminate = True
                         break
                     elif env.partialw.shape[0]==(env.num_tasks+1):
@@ -247,12 +239,12 @@ def schedule(task_path, policy_net, map_width):
 
                     # Attempt to pick another robot
                     rob_chosen = robots.pick_robot_by_min_dur(t, env, 'v1',
-                                                              exclude)
+                                                            exclude)
                 else:
                     # No valid tasks for this robot, move to next
                     exclude.append(rob_chosen)
                     rob_chosen = robots.pick_robot_by_min_dur(t, env, 'v1',
-                                                              exclude)
+                                                            exclude)
             else:
                 break
         if terminate:

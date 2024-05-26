@@ -19,6 +19,7 @@ class Task(object):
 
 
 class Robot(object):
+    schedule: list[Task]
     def __init__(self, r_id):
         self.id = r_id
         self.schedule = []
@@ -26,6 +27,7 @@ class Robot(object):
 
 
 class RobotTeam(object):
+    robots: list[Robot]
     def __init__(self, num_robots):
         self.num_robots = num_robots
         self.robots = [Robot(i) for i in range(num_robots)]
@@ -39,7 +41,7 @@ class RobotTeam(object):
             if self.robots[i].next_available_time <= timepoint:
                 available.append(self.robots[i].id)
         return available
-
+    
     def pick_robot_by_min_dur(self, time, env, version,
                               exclude=[]):
         """Returns the robot with minimum average duration on unscheduled tasks for v1,

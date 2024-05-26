@@ -297,6 +297,7 @@ class SchedulingEnv(object):
         else:
             print('Initial STN infeasible.')
     
+    
     def initialize_STN(self):
         # Initialize directed graph    
         DG = nx.DiGraph()
@@ -336,11 +337,10 @@ class SchedulingEnv(object):
         
         return DG
     
-    '''
-    Check consistency and get min make span
-        Also creates the half min graph
-    '''
+    
     def check_consistency_makespan(self, updateDG = True):
+        '''Check consistency and get min make span
+        Also creates the half min graph'''
         consistent = True
         try:
             p_ultra, d_ultra = johnsonU(self.g)
@@ -402,13 +402,12 @@ class SchedulingEnv(object):
         
         return consistent, min_makespan
     
-    '''          
-    ti is task number 1~num_tasks
-    rj is robot number 0~num_robots-1
-    append ti to rj's partial schedule
-    also update the STN
-    '''
+    
     def insert_robot(self, ti, rj, diff = 1.0, updateDG = True):
+        '''ti is task number 1~num_tasks
+        rj is robot number 0~num_robots-1
+        append ti to rj's partial schedule
+        also update the STN'''
         # sanity check
         if rj < 0 or rj >= self.num_robots:
             print('invalid insertion')
@@ -482,8 +481,9 @@ class SchedulingEnv(object):
         
         return success, reward, done
     
-    '''
-    Reward R of a state-action pair is defined as the change
+
+    def calc_reward_discount(self, updateDG = True):
+        '''Reward R of a state-action pair is defined as the change
         in objective values after taking the action,
         
         R = −1 × (Zt+1 − Zt).
@@ -491,8 +491,7 @@ class SchedulingEnv(object):
         divide Zt by a factor D > 1 if xt is not a termination state
 
         Z(infeasible) = M
-    '''
-    def calc_reward_discount(self, updateDG = True):
+        '''
         success, min_makespan = self.check_consistency_makespan(updateDG)
         # feasible
         if success:
@@ -512,10 +511,9 @@ class SchedulingEnv(object):
         self.min_makespan = min_makespan
         return success, reward
 
-    '''
-    Return unscheduled tasks given partialw
-    '''
+
     def get_unscheduled_tasks(self):
+        '''Return unscheduled tasks given partialw'''
         unsch_tasks = []
         for i in range(1, self.num_tasks+1):
             if i not in self.partialw:
@@ -523,21 +521,20 @@ class SchedulingEnv(object):
         
         return np.array(unsch_tasks)
 
+
     def get_duration_on_tasks(self, robot, tasks):
         """Returns durations of a robot on a list of tasks.
-        Task ids should be 1-indexed, and robot id should be 0-indexed
-        """
+        Task ids should be 1-indexed, and robot id should be 0-indexed"""
         assert min(tasks) > 0, 'Tasks should be 1-indexed'
         assert 0 <= robot < self.num_robots, 'Robot should be 0-indexed'
 
         task_ids = [task - 1 for task in tasks]
         return self.dur[task_ids, robot]
 
-    '''
-    Return unscheduled tasks given partialw
-        plus checking if the task can starts at current timepoint
-    '''
+    
     def get_valid_tasks(self, timepoint):
+        '''Return unscheduled tasks given partialw
+        plus checking if the task can starts at current timepoint'''
         valid_tasks = []
         for i in range(1, self.num_tasks+1):
             if i not in self.partialw:
@@ -553,13 +550,13 @@ class SchedulingEnv(object):
         
         return np.array(valid_tasks)
     
-    '''
-    Return an updated min robot STN
+    
+    def get_rSTN(self, robot_chosen, valid_task):
+        '''Return an updated min robot STN
         with task duration (valid unscheduled tasks) 
         replaced with the task duration of chosen robot
         plus consistency check
-    '''
-    def get_rSTN(self, robot_chosen, valid_task):
+        '''
         rSTN = copy.deepcopy(self.g)
         # modify STN
         for i in range(len(valid_task)):

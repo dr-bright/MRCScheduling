@@ -157,7 +157,7 @@ def build_hetgraph(halfDG, num_tasks, num_robots, dur, map_width, locs, loc_dist
         ),
     }
 
-    graph = dgl.heterograph(data_dict, num_nodes_dict=num_nodes_dict, idtype=torch.int64)
+    graph = dgl.heterograph(data_dict, num_nodes_dict=num_nodes_dict, idtype=torch.int64) # type: ignore
 
     # Store data of edges by index, as DiGraph.edges.data does not guarantee to have exactly the same
     # ordering as Digraph.edges
@@ -178,6 +178,7 @@ def build_hetgraph(halfDG, num_tasks, num_robots, dur, map_width, locs, loc_dist
     graph.edges['use_time'].data['t'] = takes_time_weight.detach().clone()
 
     return graph
+
 
 def hetgraph_node_helper(number_of_nodes, curr_partialw, curr_partials,
                          locations, durations, map_width, num_robots, num_values):
@@ -251,11 +252,9 @@ def hetgraph_node_helper(number_of_nodes, curr_partialw, curr_partials,
     return feat_dict
 
 
-'''
-Env class for maintaining current partial solution and updated graph
-    during data collection process
-'''
 class SchedulingEnv(object):
+    '''Env class for maintaining current partial solution and updated graph
+    during data collection process'''
     # read problem info specified by fname
     def __init__(self, fname):
         # load constraints
@@ -296,8 +295,7 @@ class SchedulingEnv(object):
             self.min_makespan = min_makespan
         else:
             print('Initial STN infeasible.')
-    
-    
+        
     def initialize_STN(self):
         # Initialize directed graph    
         DG = nx.DiGraph()
@@ -336,7 +334,6 @@ class SchedulingEnv(object):
             DG.add_edge(si, fj, weight = -1 * wait_cstr)
         
         return DG
-    
     
     def check_consistency_makespan(self, updateDG = True):
         '''Check consistency and get min make span
@@ -402,7 +399,6 @@ class SchedulingEnv(object):
         
         return consistent, min_makespan
     
-    
     def insert_robot(self, ti, rj, diff = 1.0, updateDG = True):
         '''ti is task number 1~num_tasks
         rj is robot number 0~num_robots-1
@@ -410,8 +406,7 @@ class SchedulingEnv(object):
         also update the STN'''
         # sanity check
         if rj < 0 or rj >= self.num_robots:
-            print('invalid insertion')
-            return False        
+            raise RuntimeError('invalid insertion')  
         
         # find tj and update partial solution
         # tj is the last task of rj's partial schedule
@@ -481,7 +476,6 @@ class SchedulingEnv(object):
         
         return success, reward, done
     
-
     def calc_reward_discount(self, updateDG = True):
         '''Reward R of a state-action pair is defined as the change
         in objective values after taking the action,
@@ -511,7 +505,6 @@ class SchedulingEnv(object):
         self.min_makespan = min_makespan
         return success, reward
 
-
     def get_unscheduled_tasks(self):
         '''Return unscheduled tasks given partialw'''
         unsch_tasks = []
@@ -521,7 +514,6 @@ class SchedulingEnv(object):
         
         return np.array(unsch_tasks)
 
-
     def get_duration_on_tasks(self, robot, tasks):
         """Returns durations of a robot on a list of tasks.
         Task ids should be 1-indexed, and robot id should be 0-indexed"""
@@ -530,7 +522,6 @@ class SchedulingEnv(object):
 
         task_ids = [task - 1 for task in tasks]
         return self.dur[task_ids, robot]
-
     
     def get_valid_tasks(self, timepoint):
         '''Return unscheduled tasks given partialw
@@ -549,7 +540,6 @@ class SchedulingEnv(object):
                     valid_tasks.append(i)
         
         return np.array(valid_tasks)
-    
     
     def get_rSTN(self, robot_chosen, valid_task):
         '''Return an updated min robot STN

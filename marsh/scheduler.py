@@ -48,6 +48,6 @@ elif args.out.lower().endswith('.yaml'):
         yaml.safe_dump(schedule, f)
 else:
     with open(args.out, 'wt', encoding='utf-8') as f:
-        json.dump(schedule, f)
+        json.dump(schedule, f, indent=2)
 print('Done', file=sys.stderr)
 

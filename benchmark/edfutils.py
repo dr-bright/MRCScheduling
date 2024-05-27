@@ -10,6 +10,8 @@ Utils for EDF
 import sys
 import numpy as np
 
+from .. import utils
+
 
 class Task(object):
     def __init__(self, t_id, s_time, e_time):
@@ -42,7 +44,7 @@ class RobotTeam(object):
                 available.append(self.robots[i].id)
         return available
     
-    def pick_robot_by_min_dur(self, time, env, version,
+    def pick_robot_by_min_dur(self, time, env: 'utils.Scheduler', version,
                               exclude=[]):
         """Returns the robot with minimum average duration on unscheduled tasks for v1,
         min duration on any one unscheduled task for v2,

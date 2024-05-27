@@ -1,11 +1,12 @@
+from sympy import Q
 import dgl, json, yaml, sys, torch, torch.nn as nn, numpy as np
 import sys, networkx as nx, numpy.typing as npt
 
 from collections import Counter
 from typing import Tuple
-from benchmark.JohnsonUltra import johnsonU
-from benchmark.edfutils import RobotTeam
-from graph.hetgat import HeteroGATLayer
+from .benchmark.JohnsonUltra import johnsonU
+from .benchmark.edfutils import RobotTeam
+from .graph.hetgat import HeteroGATLayer
 
 # input similar to HeteroGATLayer
 # merge = 'cat' or 'avg'
@@ -124,9 +125,16 @@ def gnn_pick_task(hetg, act_task, pnet, ft_dict):
 
 
 class Scheduler:
-    # TODO: implement step inspection for viz purposes
     # TODO: remote edfutils dependency and make this class self-contained
-    # TODO: bring in create_model function
+    # TODO: phase out old representations and store everything in JSON
+    # current approach destroys data from task descriptions
+    # what if task description also specified robot home positions?
+    # good news: all Scheduler state is completely internal
+    # so Scheduler can be rewritted without breaking deps in RobotTeam
+    # for now a temporary solution is implemented
+    # TODO: implement step inspection for viz purposes
+    # impossible until step state is inspected and reverse-engineered
+    
     """A wrapper around GNN trained for MARS logistic routing
     
     Automates model construction and model loading,
@@ -191,50 +199,73 @@ class Scheduler:
             model = self.create_model(model, device)
         self.model = model
         self.device = device
+        self.state = {}
     
-    def fetch_tasks_legacy(self, tasks_path, near_threshold = 1.0):
+    def fetch_state_legacy(self, prefix, near_threshold = 1.0):
+        """Fetches state from legacy format like ./data/00374_*"""
         # load constraints
-        self.dur = np.loadtxt(tasks_path+'_dur.txt', dtype=np.float64)
-        self.ddl = np.loadtxt(tasks_path+'_ddl.txt', dtype=np.float64).reshape(-1, 2).tolist()
+        self.dur = np.loadtxt(prefix + '_dur.txt', dtype=np.float64)
+        self.ddl = np.loadtxt(prefix + '_ddl.txt',
+                              dtype=np.float64).reshape(-1, 2).tolist()
         self.ddl = [(round(task_id), cstr) for task_id, cstr in self.ddl]
-        self.wait = np.loadtxt(tasks_path+'_wait.txt', dtype=np.float64).reshape(-1, 3).tolist()
-        self.wait = [(round(dep_id), round(task_id), cstr) for dep_id, task_id, cstr in self.wait]
-        # reshape if shape is 1D, meaning there is only one constraint
-        # if len(self.ddl) > 0 and len(self.ddl.shape) == 1:
-        #     self.ddl = self.ddl.reshape(1, -1)
-        # if len(self.wait) > 0 and len(self.wait.shape) == 1:
-        #     self.wait = self.wait.reshape(1, -1)
-        loc = np.loadtxt(tasks_path+'_loc.txt', dtype=np.float64).tolist()
+        self.wait = np.loadtxt(prefix + '_wait.txt',
+                               dtype=np.float64).reshape(-1, 3).tolist()
+        self.wait = [(round(dep_id), round(task_id), cstr)
+                     for dep_id, task_id, cstr in self.wait]
+        loc = np.loadtxt(prefix + '_loc.txt',
+                         dtype=np.float64).tolist()
         loc = list(map(tuple, loc))
         self.pos = list(set(loc))
         self.loc = list(map(self.pos.index, loc))
         self.near_threshold = near_threshold
+        self.state = {
+            'robots': len(self.dur[0]),
+            'near_threshold': self.near_threshold,
+            'tasks': []
+        }
+        for task_id, dur in enumerate(self.dur):
+            dur: npt.NDArray[np.float64]
+            self.state['tasks'].append({
+                'pos': [*self.pos[self.loc[task_id]]],
+                'dur': dur.tolist()
+                })
+        for ddl in self.ddl:
+            task_id, cstr = ddl
+            self.state['tasks'][task_id]['ddl'] = cstr
+        for wait in self.wait:
+            dep_id, task_id, cstr = wait
+            self.state['tasks'][task_id][dep_id] = cstr
+        return self.state
     
-    def fetch_tasks(self, tasks: dict | str): # type: ignore
-        if isinstance(tasks, str):
-            if tasks.lower().endswith('.json'):
-                with open(tasks, 'rt', encoding='utf-8') as f:
-                    tasks = json.load(f)
+    def fetch_state(self, state: dict | str):
+        if isinstance(state, str):
+            if state.lower().endswith('.json'):
+                with open(state, 'rt', encoding='utf-8') as f:
+                    self.state = json.load(f)
             else:
-                with open(tasks, 'rt', encoding='utf-8') as f:
-                    tasks = yaml.safe_load(f)
-            tasks: dict
-        num_robots = int(tasks.get('robots', 0))
-        self.near_threshold = float(tasks.get('near_threshold', 1.0))
+                with open(state, 'rt', encoding='utf-8') as f:
+                    self.state = yaml.safe_load(f)
+        else:
+            self.state = state
+        num_robots = int(self.state.get('robots', 0))
+        t = float(self.state.get('near_threshold', 1.0))
+        self.near_threshold = self.state['near_threshold'] = t
         if num_robots == 0:
-            for task in tasks['tasks']:
+            for task in self.state['tasks']:
                 if np.iterable(task['dur']):
                     num_robots = len(task['dur'])
                     break
             if num_robots == 0:
                 raise ValueError('Task description is malformed:'
                                 ' cant infer num_robots')
-        self.dur = np.zeros((len(tasks['tasks']), num_robots))
+        self.state['robots'] = num_robots
+        # TODO: drop legacy state format
+        self.dur = np.zeros((len(self.state['tasks']), num_robots))
         self.ddl = []
         self.wait = []
         self.pos = list()
         self.loc = list()
-        for task_id, task in enumerate(tasks['tasks']):
+        for task_id, task in enumerate(self.state['tasks']):
             self.dur[task_id] = task['dur']
             if 'ddl' in task:
                 self.ddl.append((task_id, float(task['ddl'])))
@@ -250,38 +281,22 @@ class Scheduler:
                 self.pos.append(pos)
             self.loc.append(pos_id)
 
-    def dump_tasks(self, saveto=None):
-        tasks = {
-            'robots': len(self.dur[0]),
-            'near_threshold': self.near_threshold,
-            'tasks': []
-        }
-        for task_id, dur in enumerate(self.dur):
-            dur: npt.NDArray[np.float64]
-            tasks['tasks'].append({
-                'pos': [*self.pos[self.loc[task_id]]],
-                'dur': dur.tolist()
-                })
-        for ddl in self.ddl:
-            task_id, cstr = ddl
-            tasks['tasks'][task_id]['ddl'] = cstr
-        for wait in self.wait:
-            dep_id, task_id, cstr = wait
-            tasks['tasks'][task_id][dep_id] = cstr
+    def dump_state(self, saveto=None):
         if saveto is None:
-            return tasks
+            pass
         elif isinstance(saveto, str):
             with open(saveto, 'wt', encoding='utf-8') as f:
                 if saveto.lower().endswith('.json'):
-                    json.dump(tasks, f, indent=4)
+                    json.dump(self.state, f, indent=4)
                 else:
-                    yaml.safe_dump(tasks, f, allow_unicode=True, )
+                    yaml.safe_dump(self.state, f, allow_unicode=True, )
         else:
-            json.dump(tasks, saveto)
+            json.dump(self.state, saveto)
+        return self.state
 
     @property
     def num_tasks(self):
-        return len(self.dur)
+        return len(self.state['tasks'])
 
     @property
     def num_robots(self):
@@ -745,14 +760,16 @@ class Scheduler:
             featd[k] = torch.Tensor(featd[k]).to(self.device)
         return graph, featd
 
-    def schedule(self, tasks=None, near_threshold=1.0):
+    def schedule(self, tasks=None, near_threshold=1.0, saveto=None):
+        # TODO: do something about dump_tasks + .update() workaround
+        # would be nice to drop RobotTeam dep and maintain schedule in state
         if tasks is not None:
             if isinstance(tasks, str) and not (
                     tasks.lower().endswith('.json')
                     or tasks.lower().endswith('yaml')):
-                self.fetch_tasks_legacy(tasks, near_threshold)
+                self.fetch_state_legacy(tasks, near_threshold)
             else:
-                self.fetch_tasks(tasks)
+                self.fetch_state(tasks)
         robots = RobotTeam(self.num_robots)
         # parameters for logging the solving process
         feas_count = 0
@@ -761,8 +778,9 @@ class Scheduler:
         terminate = False
         for t in range(self.num_tasks * 10):
             exclude = []
-            rob_chosen = robots.pick_robot_by_min_dur(t, self, 'v1', exclude)
-            # Repeatedly select robot with min duration until none available
+            rob_chosen = robots.pick_robot_by_min_dur(t, self,
+                                                      'v1', exclude)
+            # Repeatedly select robot with min dur until none available
             while rob_chosen is not None:
                 valid_tasks = np.array(self.get_valid_tasks(t),
                                     dtype=np.int64)
@@ -777,7 +795,7 @@ class Scheduler:
                                                              rob_chosen)
                         decision_step += 1
                         robots.update_status(task_chosen, rob_chosen,
-                                            task_dur, t)
+                                            task_dur, float(t))
                         print(('Step: %d,Time: %d, Robot %d,'
                             ' Task %02d, Dur %02d')
                                 %(decision_step, t, rob_chosen+1,
@@ -814,18 +832,18 @@ class Scheduler:
                 break
         # construct global plan
         # list of [start, stop, task_id, robot, position]
-        schedule = []
         for rob_id in range(self.num_robots):
             rob = robots.robots[rob_id].id
             print('Robot %d' % rob, file=sys.stderr)
             for task in robots.robots[rob_id].schedule:
                 print('Task (%d,%d,%d)'
-                      %(task.id, task.start_time, task.end_time), file=sys.stderr)
+                      %(task.id, task.start_time, task.end_time),
+                      file=sys.stderr)
                 task_id = task.id - 1
-                schedule.append(
-                    [task.start_time, task.end_time,
-                     task_id, rob, self.pos[self.loc[task_id]]])
-        return schedule
-
-    pass
+                self.state['tasks'][task_id].update({
+                    'robot': rob,
+                    'start': task.start_time,
+                    'end': task.end_time,
+                })
+        return self.dump_state(saveto)
 

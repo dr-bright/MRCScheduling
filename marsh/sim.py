@@ -6,7 +6,6 @@ import math
 import time
 from typing import Any, Tuple
 import cv2
-from matplotlib.pyplot import box
 import pygame as pg
 import pygame.gfxdraw as pg_gfxdraw
 

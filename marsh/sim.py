@@ -457,6 +457,9 @@ def main(schedule, output, res, fps):
             t += dt
             if t < final_ts:
                 pbar.update(dt)
+            else:
+                running = False
+
         
 if __name__ == '__main__':
     from argparse import ArgumentParser

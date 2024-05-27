@@ -766,7 +766,7 @@ class Scheduler:
         if tasks is not None:
             if isinstance(tasks, str) and not (
                     tasks.lower().endswith('.json')
-                    or tasks.lower().endswith('yaml')):
+                    or tasks.lower().endswith('.yaml')):
                 self.fetch_state_legacy(tasks, near_threshold)
             else:
                 self.fetch_state(tasks)
@@ -776,7 +776,7 @@ class Scheduler:
         decision_step = 0
         self.initialize()
         terminate = False
-        for t in range(self.num_tasks * 10):
+        for t in range(self.max_deadline):
             exclude = []
             rob_chosen = robots.pick_robot_by_min_dur(t, self,
                                                       'v1', exclude)
